@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Audit Route Planner</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<style>
+/* ─── RESET & TOKENS ──────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:    #0f172a;  --surf:  #1e293b;  --surf2: #263347;
+  --bdr:   #334155;  --mut:   #475569;  --sub:   #64748b;
+  --txt:   #e2e8f0;  --txt2:  #94a3b8;
+  --ind:   #6366f1;  --ind2:  #4f46e5;
+  --ia:    rgba(99,102,241,.13);
+  --ga:    rgba(34,197,94,.13);
+  --ra:    rgba(239,68,68,.13);
+  --grn:   #22c55e;  --red:   #ef4444;  --amb:   #f59e0b;
+  --r:     12px;
+  --nav:   52px;
+  --bot:   60px; /* mobile bottom bar */
+}
+html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--txt); font-family: 'DM Sans', system-ui, sans-serif; font-size: 14px; }
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-thumb { background: var(--bdr); border-radius: 2px; }
+
+/* ─── SHELL ───────────────────────────────────────── */
+#app { display: flex; flex-direction: column; height: 100dvh; height: 100vh; }
+
+/* ─── TOP NAV ─────────────────────────────────────── */
+nav {
+  height: var(--nav); flex-shrink: 0;
+  background: var(--bg); border-bottom: 1px solid #1b2640;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 14px; gap: 8px; z-index: 200;
+}
+.n-brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.n-logo  { width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+           background: linear-gradient(135deg,var(--ind),var(--ind2));
+           display: flex; align-items: center; justify-content: center; }
+.n-title { font-size: 14px; font-weight: 700; letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.n-sub   { font-size: 9px; color: var(--sub); font-weight: 500; letter-spacing: .07em; text-transform: uppercase; }
+.n-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+
+.badge   { padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.b-red   { background: var(--ra); color: #f87171; border: 1px solid rgba(239,68,68,.25); }
+.b-grn   { background: var(--ga); color: #4ade80; border: 1px solid rgba(34,197,94,.25); }
+
+#loc-btn {
+  display: flex; align-items: center; gap: 5px;
+  padding: 5px 9px; border-radius: 8px; border: 1px solid var(--bdr);
+  background: transparent; color: var(--txt2); font-size: 11px; font-weight: 600;
+  font-family: inherit; cursor: pointer; white-space: nowrap;
+  -webkit-tap-highlight-color: transparent;
+}
+.loc-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--amb); }
+
+/* hide desktop badges on narrow nav */
+@media (max-width: 520px) { .desk-badge { display: none; } }
+
+/* ─── MAIN CONTENT ────────────────────────────────── */
+#main { flex: 1; min-height: 0; overflow: hidden; }
+
+/* ══════════════════════════════════════════
+   DESKTOP  ≥ 860px  —  3-column grid
+══════════════════════════════════════════ */
+@media (min-width: 860px) {
+  #main {
+    display: grid;
+    grid-template-columns: 275px 1fr 275px;
+    gap: 12px; padding: 12px;
+  }
+  /* hide mobile-only pieces */
+  #bot-bar, .mob-fab, .mob-stats-strip { display: none !important; }
+  /* all panels visible, no tab switching */
+  .page { display: flex !important; flex-direction: column; gap: 10px; overflow: hidden; height: 100%; }
+}
+
+/* ══════════════════════════════════════════
+   MOBILE  < 860px  —  paged tabs
+══════════════════════════════════════════ */
+@media (max-width: 859px) {
+  #main { position: relative; }
+
+  .page { display: none; flex-direction: column; gap: 10px; overflow: hidden;
+          position: absolute; inset: 0; padding: 12px;
+          padding-bottom: calc(var(--bot) + 12px); }
+  .page.active { display: flex; }
+
+  #page-map { padding: 0; padding-bottom: var(--bot); }
+
+  /* desktop-only pieces */
+  .desk-col-right { display: none !important; }
+  .desk-planner-bar .plan-ok { display: none !important; }
+}
+
+/* ─── SHARED PANEL ────────────────────────────────── */
+.panel { background: var(--surf); border: 1px solid var(--bdr); border-radius: var(--r); overflow: hidden; }
+.panel-hd { padding: 10px 14px; border-bottom: 1px solid var(--bdr);
+            font-size: 11px; font-weight: 700; color: var(--txt2);
+            text-transform: uppercase; letter-spacing: .06em; }
+
+/* ─── STAT CARDS ──────────────────────────────────── */
+.stats-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; flex-shrink: 0; }
+.stat-card { background: linear-gradient(135deg,var(--surf),#1a2744);
+             border: 1px solid var(--bdr); border-radius: var(--r); padding: 12px 14px; }
+.stat-lbl  { font-size: 10px; color: var(--sub); font-weight: 700;
+             text-transform: uppercase; letter-spacing: .06em; margin-bottom: 3px; }
+.stat-val  { font-size: 20px; font-weight: 700; }
+
+/* mobile: 3-column stats strip */
+.mob-stats-strip { display: flex; gap: 8px; flex-shrink: 0; }
+.mob-stat  { flex: 1; background: linear-gradient(135deg,var(--surf),#1a2744);
+             border: 1px solid var(--bdr); border-radius: var(--r); padding: 10px 10px; }
+
+/* ─── BUTTONS ─────────────────────────────────────── */
+.btn-pri {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  background: linear-gradient(135deg,var(--ind),var(--ind2));
+  color: #fff; border: none; border-radius: 10px;
+  padding: 10px 16px; font-size: 13px; font-weight: 600;
+  cursor: pointer; font-family: inherit; width: 100%;
+  -webkit-tap-highlight-color: transparent; transition: opacity .15s;
+}
+.btn-pri:active { opacity: .8; }
+
+.btn-ghost {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: transparent; border: 1px solid var(--bdr); color: var(--txt2);
+  border-radius: 7px; padding: 5px 10px; font-size: 11px; font-weight: 600;
+  cursor: pointer; font-family: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+.btn-ghost:active { background: var(--bdr); }
+.btn-danger  { color: #f87171; border-color: rgba(239,68,68,.35); }
+.btn-success { color: #4ade80; border-color: rgba(34,197,94,.35); }
+
+.btn-grn {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  background: linear-gradient(135deg,#10b981,#059669); color: #fff;
+  border: none; border-radius: 10px; padding: 9px; font-size: 12px; font-weight: 600;
+  cursor: pointer; font-family: inherit; width: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ─── SITES LIST ──────────────────────────────────── */
+.sites-scroll { flex: 1; overflow-y: auto; }
+.site-row { padding: 11px 14px; border-bottom: 1px solid #1c2840; }
+.site-row:active { background: rgba(99,102,241,.06); }
+.site-top    { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2px; }
+.site-name   { font-size: 13px; font-weight: 600; flex: 1; margin-right: 8px;
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.site-amount { font-size: 12px; font-weight: 700; color: var(--ind); margin-bottom: 6px; }
+.site-acts   { display: flex; gap: 5px; flex-wrap: wrap; }
+.s-pill { padding: 2px 8px; border-radius: 20px; font-size: 10px; font-weight: 700; flex-shrink: 0; }
+.s-pend { background: var(--ra); color: #f87171; border: 1px solid rgba(239,68,68,.2); }
+.s-vis  { background: var(--ga); color: #4ade80; border: 1px solid rgba(34,197,94,.2); }
+.empty-state { padding: 36px 16px; text-align: center; color: var(--sub); font-size: 13px; line-height: 1.7; }
+.empty-state .em { font-size: 30px; display: block; margin-bottom: 8px; }
+
+/* ─── PLANNER BAR ─────────────────────────────────── */
+.planner-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex-shrink: 0;
+  background: var(--surf); border: 1px solid var(--bdr); border-radius: var(--r); padding: 10px 14px;
+}
+.planner-bar label { font-size: 13px; font-weight: 600; color: var(--txt2); white-space: nowrap; }
+.num-in {
+  width: 56px; text-align: center; background: var(--bg); border: 1px solid var(--bdr);
+  color: var(--txt); border-radius: 8px; padding: 5px 6px; font-size: 13px;
+  font-family: 'DM Mono', monospace; outline: none;
+}
+.num-in:focus { border-color: var(--ind); }
+.gen-btn { flex: 1; min-width: 130px; width: auto !important; padding: 8px 12px !important; border-radius: 8px !important; font-size: 12px !important; }
+.plan-ok { font-size: 12px; font-weight: 600; color: #4ade80; width: 100%; display: none; }
+
+/* ─── MAP ─────────────────────────────────────────── */
+.map-wrap { flex: 1; min-height: 0; border-radius: var(--r); overflow: hidden; border: 1px solid var(--bdr); }
+.map-wrap-full { flex: 1; min-height: 0; overflow: hidden; border-radius: 0; border: none; }
+#map-d, #map-m { width: 100%; height: 100%; }
+
+/* mobile floating planner overlay on map screen */
+.map-overlay {
+  position: absolute; bottom: calc(var(--bot) + 10px); left: 12px; right: 12px; z-index: 500;
+  background: rgba(15,23,42,.93); border: 1px solid var(--bdr);
+  border-radius: 14px; padding: 10px 12px; backdrop-filter: blur(10px);
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.map-overlay label { font-size: 12px; font-weight: 600; color: var(--txt2); white-space: nowrap; }
+.map-overlay .plan-ok { margin-top: 0; }
+
+/* ─── LEGEND ──────────────────────────────────────── */
+.legend {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; flex-shrink: 0;
+  background: var(--surf); border: 1px solid var(--bdr); border-radius: var(--r); padding: 7px 14px;
+}
+.leg-lbl  { font-size: 10px; font-weight: 700; color: var(--mut); text-transform: uppercase; letter-spacing: .05em; }
+.leg-item { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--txt2); }
+.leg-dot  { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.leg-dash { width: 18px; border-top: 2px dashed var(--ind); }
+
+/* ─── RIGHT PANEL (desktop) ───────────────────────── */
+.rtabs { display: flex; gap: 4px; background: var(--surf); border: 1px solid var(--bdr); border-radius: 10px; padding: 4px; flex-shrink: 0; }
+.rtab  { flex: 1; padding: 6px; border-radius: 7px; font-size: 13px; font-weight: 600; cursor: pointer; border: none; font-family: inherit; background: transparent; color: var(--sub); transition: all .12s; }
+.rtab.active { background: var(--ind); color: #fff; }
+.rtab-content { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+.rtab-pane { display: none; flex: 1; overflow: hidden; flex-direction: column; }
+.rtab-pane.active { display: flex; }
+.sites-tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+.sites-tbl th { padding: 7px 10px; text-align: left; color: var(--mut); font-size: 10px; font-weight: 700; text-transform: uppercase; background: var(--bg); }
+.sites-tbl th:nth-child(2) { text-align: right; }
+.sites-tbl th:nth-child(3) { text-align: center; }
+.sites-tbl td { padding: 7px 10px; border-bottom: 1px solid #1c2840; }
+.sites-tbl td:nth-child(2) { text-align: right; color: #a5b4fc; font-weight: 700; font-family: 'DM Mono', monospace; }
+.sites-tbl td:nth-child(3) { text-align: center; }
+
+/* ─── PLAN PANEL ──────────────────────────────────── */
+.plan-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 24px; color: var(--sub); }
+.plan-empty .em { font-size: 38px; margin-bottom: 10px; }
+.plan-empty p { font-size: 13px; line-height: 1.65; }
+.plan-ready { display: none; flex: 1; overflow: hidden; flex-direction: column; }
+.plan-summary { padding: 12px; flex-shrink: 0; }
+.plan-kpi-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+.plan-kpi { background: var(--ia); border-radius: 8px; padding: 8px 10px; }
+.plan-kpi-lbl { font-size: 10px; color: var(--ind); font-weight: 700; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 2px; }
+.plan-kpi-val { font-size: 15px; font-weight: 700; color: #a5b4fc; }
+.plan-items   { flex: 1; overflow-y: auto; padding: 4px 0; }
+.plan-item    { background: linear-gradient(135deg,rgba(99,102,241,.08),rgba(79,70,229,.03));
+                border: 1px solid rgba(99,102,241,.18); border-radius: 10px;
+                padding: 10px 12px; margin: 0 8px 8px;
+                display: flex; align-items: flex-start; gap: 10px; }
+.ord-badge { background: var(--ind); color: #fff; width: 24px; height: 24px; border-radius: 50%;
+             display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; }
+.pi-name   { font-size: 13px; font-weight: 600; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pi-row    { display: flex; justify-content: space-between; font-size: 12px; }
+.pi-coords { font-size: 10px; color: var(--mut); margin-top: 3px; }
+
+/* ─── BOTTOM TAB BAR (mobile only) ───────────────── */
+#bot-bar {
+  height: var(--bot); flex-shrink: 0;
+  background: var(--surf); border-top: 1px solid var(--bdr);
+  display: flex; align-items: stretch; z-index: 200;
+}
+.bot-tab {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; border: none; background: transparent; color: var(--sub);
+  font-size: 10px; font-weight: 600; font-family: inherit; cursor: pointer;
+  border-top: 2px solid transparent; -webkit-tap-highlight-color: transparent;
+}
+.bot-tab.active { color: var(--ind); border-top-color: var(--ind); }
+.bot-tab svg { transition: opacity .15s; }
+.bot-tab.active svg { opacity: 1; }
+.bot-tab:not(.active) svg { opacity: .55; }
+
+/* FAB — add site on mobile */
+.mob-fab {
+  position: fixed; bottom: calc(var(--bot) + 12px); right: 14px;
+  width: 50px; height: 50px; border-radius: 50%;
+  background: linear-gradient(135deg,var(--ind),var(--ind2));
+  border: none; color: #fff; cursor: pointer; z-index: 300;
+  box-shadow: 0 4px 18px rgba(99,102,241,.55);
+  display: flex; align-items: center; justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+}
+.mob-fab:active { transform: scale(.91); }
+@media (min-width: 860px) { #bot-bar, .mob-fab { display: none !important; } }
+
+/* ─── MODALS ──────────────────────────────────────── */
+.overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,.65); backdrop-filter: blur(5px);
+  z-index: 1000; align-items: flex-end; justify-content: center;
+}
+.overlay.open { display: flex; }
+@media (min-width: 580px) { .overlay { align-items: center; } }
+
+.mbox {
+  background: var(--surf); border: 1px solid var(--bdr);
+  border-radius: 20px 20px 0 0; padding: 20px 20px 30px;
+  width: 100%; max-height: 92dvh; max-height: 92vh; overflow-y: auto;
+  animation: up .22s ease;
+}
+@media (min-width: 580px) {
+  .mbox { border-radius: 16px; width: 400px; max-height: 90vh; padding: 22px; animation: fd .2s ease; }
+  .mbox.wide { width: 440px; }
+}
+@keyframes up { from { transform: translateY(50px); opacity:0 } to { transform: translateY(0); opacity:1 } }
+@keyframes fd { from { transform: translateY(12px); opacity:0 } to { transform: translateY(0); opacity:1 } }
+
+.drag-handle { width: 36px; height: 4px; background: var(--bdr); border-radius: 2px; margin: 0 auto 16px; }
+@media (min-width: 580px) { .drag-handle { display: none; } }
+
+.mhead { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; }
+.mtitle { font-size: 16px; font-weight: 700; margin-bottom: 3px; }
+.msub   { font-size: 12px; color: var(--sub); }
+.mclose { background: none; border: none; color: var(--sub); cursor: pointer; padding: 2px; line-height: 0; }
+
+.fg { margin-bottom: 12px; }
+.fl { display: block; font-size: 10px; font-weight: 700; color: var(--sub); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 5px; }
+.fi {
+  width: 100%; background: var(--bg); border: 1px solid var(--bdr);
+  border-radius: 10px; padding: 11px 12px; font-size: 14px; color: var(--txt);
+  font-family: inherit; outline: none; -webkit-appearance: none; appearance: none;
+}
+.fi:focus { border-color: var(--ind); }
+.frow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.factions { display: flex; gap: 8px; margin-top: 6px; }
+.btn-cancel { flex: 1; background: var(--bdr); border: none; color: var(--txt2); border-radius: 10px; padding: 10px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+
+.sec-title { font-size: 11px; font-weight: 700; color: var(--sub); text-transform: uppercase; letter-spacing: .07em; margin-bottom: 8px; }
+.city-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 6px; margin-bottom: 14px; }
+.city-btn  { background: var(--bg); border: 1px solid var(--bdr); color: var(--txt2); border-radius: 8px; padding: 9px 4px; font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit; text-align: center; -webkit-tap-highlight-color: transparent; }
+.city-btn:active { border-color: var(--ind); background: var(--ia); color: var(--txt); }
+.hdiv { border: none; border-top: 1px solid var(--bdr); margin: 14px 0; }
+.tip  { font-size: 11px; color: var(--mut); margin-bottom: 10px; line-height: 1.6; }
+.tip a { color: var(--ind); }
+
+/* ─── ANIMATIONS ──────────────────────────────────── */
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.2} }
+.pulse { animation: pulse 1.3s ease-in-out infinite; }
+</style>
+</head>
+<body>
+<div id="app">
+
+<!-- ─── TOP NAV ───────────────────────────────────── -->
+<nav>
+  <div class="n-brand">
+    <div class="n-logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" width="16" height="16">
+        <circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>
+      </svg>
+    </div>
+    <div>
+      <div class="n-title">Audit Route Planner</div>
+      <div class="n-sub">CA Field Visit Optimizer</div>
+    </div>
+  </div>
+  <div class="n-right">
+    <span id="bdg-pend" class="badge b-red desk-badge">0 Pending</span>
+    <span id="bdg-vis"  class="badge b-grn desk-badge">0 Visited</span>
+    <button id="loc-btn" onclick="openLocModal(false)">
+      <span class="loc-dot pulse" id="loc-dot"></span>
+      <span id="loc-txt">Set Location</span>
+    </button>
+  </div>
+</nav>
+
+<!-- ─── MAIN ──────────────────────────────────────── -->
+<div id="main">
+
+  <!-- PAGE 1 / LEFT COL: Sites list -->
+  <div class="page active" id="page-sites">
+
+    <!-- mobile stats strip -->
+    <div class="mob-stats-strip">
+      <div class="mob-stat"><div class="stat-lbl">Sites</div><div class="stat-val" id="ms-tot" style="font-size:18px">0</div></div>
+      <div class="mob-stat"><div class="stat-lbl">Pending</div><div class="stat-val" id="ms-pnd" style="font-size:18px;color:#f87171">0</div></div>
+      <div class="mob-stat"><div class="stat-lbl">Value</div><div class="stat-val" id="ms-val" style="font-size:14px;color:#a5b4fc">₹0L</div></div>
+    </div>
+
+    <!-- desktop stat cards -->
+    <div class="stats-row" style="display:none" id="desk-stats">
+      <div class="stat-card"><div class="stat-lbl">Total Sites</div><div class="stat-val" id="st-tot">0</div></div>
+      <div class="stat-card"><div class="stat-lbl">Total Value</div><div class="stat-val" id="st-val" style="font-size:16px;color:#a5b4fc">₹0L</div></div>
+    </div>
+
+    <button class="btn-pri" id="desk-add-btn" onclick="openAddModal()" style="display:none">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Add Audit Site
+    </button>
+
+    <div class="panel" style="flex:1;overflow:hidden;display:flex;flex-direction:column;">
+      <div class="panel-hd">Audit Sites</div>
+      <div class="sites-scroll" id="sites-list"></div>
+    </div>
+  </div>
+
+  <!-- PAGE 2 / CENTER COL: Map -->
+  <div class="page" id="page-map">
+
+    <!-- desktop: planner bar + map + legend stacked -->
+    <div class="planner-bar desk-planner-bar" id="desk-plan-bar" style="display:none">
+      <svg viewBox="0 0 24 24" fill="none" stroke="var(--ind)" stroke-width="2" width="15" height="15"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg>
+      <label for="nd">Sites today:</label>
+      <input id="nd" class="num-in" type="number" min="1" max="20" value="3"/>
+      <button class="btn-pri gen-btn" onclick="genPlan('d')">Generate Visit Plan</button>
+      <span class="plan-ok" id="ok-d"></span>
+    </div>
+
+    <div class="map-wrap" id="desk-map-wrap" style="display:none"><div id="map-d"></div></div>
+
+    <div class="legend" id="desk-legend" style="display:none">
+      <span class="leg-lbl">Legend</span>
+      <span class="leg-item"><span class="leg-dot" style="background:#ef4444"></span>Pending</span>
+      <span class="leg-item"><span class="leg-dot" style="background:#22c55e"></span>Visited</span>
+      <span class="leg-item"><span class="leg-dot" style="background:#3b82f6"></span>You</span>
+      <span class="leg-item"><span class="leg-dash"></span>Route</span>
+    </div>
+
+    <!-- mobile: full-screen map + floating overlay -->
+    <div class="map-wrap-full" id="mob-map-wrap"><div id="map-m"></div></div>
+    <div class="map-overlay" id="mob-plan-overlay">
+      <label for="nm">Today:</label>
+      <input id="nm" class="num-in" type="number" min="1" max="20" value="3" style="width:50px"/>
+      <button class="btn-pri gen-btn" onclick="genPlan('m')">Generate Plan</button>
+      <span class="plan-ok" id="ok-m"></span>
+    </div>
+  </div>
+
+  <!-- PAGE 3 / RIGHT COL (desktop): Visit plan panel -->
+  <div class="page desk-col-right" id="page-plan">
+    <div class="rtabs">
+      <button class="rtab active" onclick="rtab('sites')">All Sites</button>
+      <button class="rtab"        onclick="rtab('plan')">Visit Plan</button>
+    </div>
+    <div class="rtab-content">
+
+      <!-- All sites table -->
+      <div class="rtab-pane active" id="rp-sites">
+        <div class="panel" style="flex:1;overflow:hidden;display:flex;flex-direction:column;">
+          <div class="panel-hd">All Audit Sites</div>
+          <div style="flex:1;overflow-y:auto;">
+            <table class="sites-tbl">
+              <thead><tr><th>Site</th><th>Amount</th><th>Status</th></tr></thead>
+              <tbody id="tbl-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Visit plan -->
+      <div class="rtab-pane" id="rp-plan">
+        <div class="plan-empty" id="pe-d"><div class="em">🗺️</div><p>No visit plan yet.<br>Set sites and click<br><strong style="color:var(--txt2)">Generate Visit Plan</strong>.</p></div>
+        <div class="plan-ready" id="pr-d">
+          <div class="panel plan-summary">
+            <div style="font-size:10px;font-weight:700;color:var(--ind);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">Today's Visit Plan</div>
+            <div class="plan-kpi-row">
+              <div class="plan-kpi"><div class="plan-kpi-lbl">Total Value</div><div class="plan-kpi-val" id="kv-d">₹0</div></div>
+              <div class="plan-kpi"><div class="plan-kpi-lbl">Est. Distance</div><div class="plan-kpi-val" id="kd-d">0 km</div></div>
+            </div>
+            <button class="btn-grn" onclick="openGMaps()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              Open Route in Google Maps
+            </button>
+          </div>
+          <div class="plan-items" id="pi-d"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PAGE 4 (mobile only): Visit plan full screen -->
+  <div class="page" id="page-mobplan">
+    <div class="plan-empty" id="pe-m" style="flex:1"><div class="em">🗺️</div><p>Generate a plan<br>from the Map tab.</p></div>
+    <div class="plan-ready" id="pr-m" style="flex:1">
+      <div class="panel plan-summary" style="margin-bottom:10px">
+        <div style="font-size:10px;font-weight:700;color:var(--ind);text-transform:uppercase;letter-spacing:.1em;margin-bottom:8px">Today's Visit Plan</div>
+        <div class="plan-kpi-row">
+          <div class="plan-kpi"><div class="plan-kpi-lbl">Total Value</div><div class="plan-kpi-val" id="kv-m">₹0</div></div>
+          <div class="plan-kpi"><div class="plan-kpi-lbl">Est. Distance</div><div class="plan-kpi-val" id="kd-m">0 km</div></div>
+        </div>
+        <button class="btn-grn" onclick="openGMaps()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+          Open Route in Google Maps
+        </button>
+      </div>
+      <div class="plan-items" id="pi-m" style="flex:1;overflow-y:auto;"></div>
+    </div>
+  </div>
+
+</div><!-- #main -->
+
+<!-- ─── MOBILE BOTTOM BAR ──────────────────────────── -->
+<div id="bot-bar">
+  <button class="bot-tab active" id="bt-sites" onclick="goPage('sites')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+    Sites
+  </button>
+  <button class="bot-tab" id="bt-map" onclick="goPage('map')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
+    Map
+  </button>
+  <button class="bot-tab" id="bt-plan" onclick="goPage('mobplan')">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="20" height="20"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg>
+    Plan
+  </button>
+</div>
+
+<!-- FAB -->
+<button class="mob-fab" onclick="openAddModal()">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="22" height="22"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+</button>
+
+</div><!-- #app -->
+
+<!-- ─── LOCATION MODAL ────────────────────────────── -->
+<div class="overlay" id="modal-loc">
+  <div class="mbox wide">
+    <div class="drag-handle"></div>
+    <div class="mhead">
+      <div><div class="mtitle">Set Your Location</div><div class="msub" id="loc-sub">Pick a city or enter coordinates.</div></div>
+      <button class="mclose" onclick="closeModal('modal-loc')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
+    <div class="sec-title">Quick Select — City</div>
+    <div class="city-grid" id="city-grid"></div>
+    <hr class="hdiv"/>
+    <div class="sec-title">Enter Coordinates Manually</div>
+    <p class="tip">Open <a href="https://maps.google.com" target="_blank">Google Maps</a> → right-click your location → copy the coordinates.</p>
+    <div class="frow" style="margin-bottom:10px">
+      <div><label class="fl">Latitude</label><input class="fi" id="mlat" type="number" placeholder="28.6139"/></div>
+      <div><label class="fl">Longitude</label><input class="fi" id="mlon" type="number" placeholder="77.2090"/></div>
+    </div>
+    <button class="btn-pri" onclick="applyManual()">Set This Location</button>
+  </div>
+</div>
+
+<!-- ─── SITE MODAL ────────────────────────────────── -->
+<div class="overlay" id="modal-site">
+  <div class="mbox">
+    <div class="drag-handle"></div>
+    <div class="mhead">
+      <div><div class="mtitle" id="smt">Add Audit Site</div><div class="msub">Fill in the site details below</div></div>
+      <button class="mclose" onclick="closeModal('modal-site')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
+    <div class="fg"><label class="fl">Site Name</label><input class="fi" id="fn" placeholder="e.g. ABC Pvt Ltd"/></div>
+    <div class="frow">
+      <div class="fg"><label class="fl">Latitude</label><input class="fi" id="fla" type="number" placeholder="28.6139"/></div>
+      <div class="fg"><label class="fl">Longitude</label><input class="fi" id="flo" type="number" placeholder="77.2090"/></div>
+    </div>
+    <div class="fg"><label class="fl">Audit Amount (₹)</label><input class="fi" id="fam" type="number" placeholder="500000"/></div>
+    <div class="fg"><label class="fl">Status</label><select class="fi" id="fst"><option value="pending">Pending</option><option value="visited">Visited</option></select></div>
+    <input type="hidden" id="feid"/>
+    <div class="factions">
+      <button class="btn-pri" style="flex:1" onclick="submitSite()"><span id="sbl">Add Site</span></button>
+      <button class="btn-cancel" onclick="closeModal('modal-site')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+// ═══════════════════════════════════════════════
+//  STATE
+// ═══════════════════════════════════════════════
+const SK = 'arp_v5';
+let sites = JSON.parse(localStorage.getItem(SK) || '[]');
+let userLoc = null, plan = null;
+let mapD = null, mapM = null;
+let umD = null, umM = null, rpD = null, rpM = null;
+const mkD = {}, mkM = {};
+let isDesktop = window.innerWidth >= 860;
+
+const CITIES = [
+  {n:'New Delhi', la:28.6139,lo:77.2090}, {n:'Mumbai',    la:19.0760,lo:72.8777},
+  {n:'Bangalore', la:12.9716,lo:77.5946}, {n:'Chennai',   la:13.0827,lo:80.2707},
+  {n:'Hyderabad', la:17.3850,lo:78.4867}, {n:'Pune',      la:18.5204,lo:73.8567},
+  {n:'Kolkata',   la:22.5726,lo:88.3639}, {n:'Ahmedabad', la:23.0225,lo:72.5714},
+  {n:'Surat',     la:21.1702,lo:72.8311}, {n:'Jaipur',    la:26.9124,lo:75.7873},
+  {n:'Lucknow',   la:26.8467,lo:80.9462}, {n:'Faridabad', la:28.4089,lo:77.3178},
+];
+
+// ═══════════════════════════════════════════════
+//  UTILS
+// ═══════════════════════════════════════════════
+const save = () => localStorage.setItem(SK, JSON.stringify(sites));
+
+function hav(a,b,c,d) {
+  const R=6371,dL=(c-a)*Math.PI/180,dO=(d-b)*Math.PI/180;
+  const x=Math.sin(dL/2)**2+Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.sin(dO/2)**2;
+  return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));
+}
+function nn(sla,slo,items) {
+  const q=[...items],r=[];let cla=sla,clo=slo;
+  while(q.length){let md=Infinity,mi=0;q.forEach((s,i)=>{const d=hav(cla,clo,s.latitude,s.longitude);if(d<md){md=d;mi=i;}});const n=q.splice(mi,1)[0];r.push({...n,dfp:md});cla=n.latitude;clo=n.longitude;}
+  return r;
+}
+function buildPlan(n) {
+  const p=sites.filter(s=>s.status==='pending');if(!p.length)return null;
+  const sc=p.map(s=>{const d=hav(userLoc.lat,userLoc.lon,s.latitude,s.longitude);return{...s,score:s.audit_amount/(d||.001)};});
+  sc.sort((a,b)=>b.score-a.score);
+  return nn(userLoc.lat,userLoc.lon,sc.slice(0,n));
+}
+
+// ═══════════════════════════════════════════════
+//  LAYOUT MODE  (show/hide desktop vs mobile els)
+// ═══════════════════════════════════════════════
+function applyLayout() {
+  isDesktop = window.innerWidth >= 860;
+  // Desktop-only elements
+  ['desk-stats','desk-add-btn','desk-plan-bar','desk-map-wrap','desk-legend'].forEach(id=>{
+    const el=document.getElementById(id);if(el)el.style.display=isDesktop?'':'none';
+  });
+  // desk-stats grid needs grid not block
+  const ds=document.getElementById('desk-stats');if(ds&&isDesktop)ds.style.display='grid';
+  // Mobile map elements
+  const mmw=document.getElementById('mob-map-wrap'),mpo=document.getElementById('mob-plan-overlay');
+  if(mmw)mmw.style.display=isDesktop?'none':'';
+  if(mpo)mpo.style.display=isDesktop?'none':'';
+  // page-plan (right col) only auto-shows on desktop
+  const pp=document.getElementById('page-plan');
+  if(pp)pp.style.display=isDesktop?'flex':'none';
+  // on desktop all pages are "active" (grid cells)
+  if(isDesktop){
+    ['page-sites','page-map'].forEach(id=>{const el=document.getElementById(id);if(el){el.style.display='flex';el.classList.add('active');}});
+    document.getElementById('page-mobplan').style.display='none';
+  }
+  // invalidate maps after layout change
+  setTimeout(()=>{if(mapD)mapD.invalidateSize();if(mapM)mapM.invalidateSize();},80);
+}
+
+// ═══════════════════════════════════════════════
+//  MAPS
+// ═══════════════════════════════════════════════
+function mkIco(col,bdr,num){
+  const h=num
+    ?`<div style="background:${col};border:2px solid ${bdr};color:#fff;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;box-shadow:0 2px 8px rgba(0,0,0,.4);font-family:system-ui">${num}</div>`
+    :`<div style="background:${col};border:2px solid ${bdr};width:16px;height:16px;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,.4)"></div>`;
+  return L.divIcon({html:h,className:'',iconAnchor:num?[14,14]:[8,8]});
+}
+const uIco=()=>L.divIcon({html:`<div style="background:#3b82f6;border:3px solid #fff;width:18px;height:18px;border-radius:50%;box-shadow:0 0 0 3px rgba(59,130,246,.35)"></div>`,className:'',iconAnchor:[9,9]});
+
+function popHTML(s){
+  const p=s.status==='pending';
+  return`<div style="font-family:system-ui;min-width:150px">
+    <b style="font-size:13px;color:#1e293b">${s.site_name}</b>
+    <div style="color:#6366f1;font-weight:700;font-size:12px;margin:3px 0">₹${Number(s.audit_amount).toLocaleString()}</div>
+    <span style="padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;background:${p?'#fee2e2':'#dcfce7'};color:${p?'#dc2626':'#16a34a'};display:inline-block;margin-bottom:8px">${s.status}</span>
+    <div style="display:flex;gap:5px">
+      <button onclick="openEditModal('${s.id}')" style="flex:1;padding:5px;background:#3b82f6;color:#fff;border:none;border-radius:6px;font-size:11px;cursor:pointer;font-weight:600">Edit</button>
+      <button onclick="delSite('${s.id}')" style="flex:1;padding:5px;background:#ef4444;color:#fff;border:none;border-radius:6px;font-size:11px;cursor:pointer;font-weight:600">Delete</button>
+    </div></div>`;
+}
+
+function refreshMap(m,umRef,rpRef,mks,setUm,setRp){
+  if(!m)return;
+  Object.values(mks).forEach(mk=>mk.remove()); Object.keys(mks).forEach(k=>delete mks[k]);
+  if(rpRef)rpRef.remove();
+  const ord={};if(plan)plan.forEach((s,i)=>ord[s.id]=i+1);
+  sites.forEach(s=>{
+    const p=s.status==='pending',num=ord[s.id];
+    const mk=L.marker([s.latitude,s.longitude],{icon:mkIco(p?'#ef4444':'#22c55e',p?'#dc2626':'#16a34a',num)}).addTo(m);
+    mk.bindPopup(popHTML(s),{maxWidth:200}); mks[s.id]=mk;
+  });
+  if(userLoc){if(umRef)umRef.remove();const um=L.marker([userLoc.lat,userLoc.lon],{icon:uIco()}).addTo(m);um.bindPopup('<b>📍 Your Location</b>');setUm(um);}
+  if(plan&&plan.length&&userLoc){
+    const pts=[[userLoc.lat,userLoc.lon],...plan.map(s=>[s.latitude,s.longitude])];
+    const rp=L.polyline(pts,{color:'#6366f1',weight:3,dashArray:'8 6',opacity:.85}).addTo(m);
+    setRp(rp);m.fitBounds(L.latLngBounds(pts),{padding:[40,40]});
+  } else if(userLoc){
+    setRp(null);
+    const pts=[...sites.map(s=>[s.latitude,s.longitude])];
+    if(pts.length)try{m.fitBounds(L.latLngBounds([[userLoc.lat,userLoc.lon],...pts]),{padding:[40,40]});}catch{}
+    else m.setView([userLoc.lat,userLoc.lon],10);
+  } else { setRp(null); if(sites.length>1)try{m.fitBounds(L.latLngBounds(sites.map(s=>[s.latitude,s.longitude])),{padding:[40,40]});}catch{}; }
+}
+function renderMaps(){
+  refreshMap(mapD,umD,rpD,mkD,m=>umD=m,r=>rpD=r);
+  refreshMap(mapM,umM,rpM,mkM,m=>umM=m,r=>rpM=r);
+}
+
+// ═══════════════════════════════════════════════
+//  RENDER
+// ═══════════════════════════════════════════════
+function render(){renderStats();renderList();renderTable();renderMaps();if(plan)renderPlan();}
+
+function renderStats(){
+  const p=sites.filter(s=>s.status==='pending').length;
+  const v=sites.filter(s=>s.status==='visited').length;
+  const t=sites.reduce((a,s)=>a+Number(s.audit_amount),0);
+  const vStr='₹'+(t/100000).toFixed(1)+'L';
+  // desktop
+  document.getElementById('st-tot').textContent=sites.length;
+  document.getElementById('st-val').textContent=vStr;
+  document.getElementById('bdg-pend').textContent=p+' Pending';
+  document.getElementById('bdg-vis').textContent=v+' Visited';
+  // mobile strip
+  document.getElementById('ms-tot').textContent=sites.length;
+  document.getElementById('ms-pnd').textContent=p;
+  document.getElementById('ms-val').textContent=vStr;
+}
+
+function siteRowHTML(s){
+  const p=s.status==='pending';
+  return`<div class="site-row">
+    <div class="site-top">
+      <span class="site-name">${s.site_name}</span>
+      <span class="s-pill ${p?'s-pend':'s-vis'}">${s.status}</span>
+    </div>
+    <div class="site-amount">₹${Number(s.audit_amount).toLocaleString()}</div>
+    <div class="site-acts">
+      <button class="btn-ghost" onclick="openEditModal('${s.id}')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>Edit
+      </button>
+      ${p?`<button class="btn-ghost btn-success" onclick="markVis('${s.id}')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="11" height="11"><polyline points="20 6 9 17 4 12"/></svg>Done
+      </button>`:''}
+      <button class="btn-ghost btn-danger" onclick="delSite('${s.id}')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+      </button>
+    </div>
+  </div>`;
+}
+const emptyHTML=`<div class="empty-state"><span class="em">📍</span>No sites yet.<br>Tap + to add your first site.</div>`;
+function renderList(){document.getElementById('sites-list').innerHTML=sites.length?sites.map(siteRowHTML).join(''):emptyHTML;}
+function renderTable(){
+  document.getElementById('tbl-body').innerHTML=sites.length
+    ?sites.map(s=>`<tr><td style="max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.site_name}</td><td>₹${(Number(s.audit_amount)/1000).toFixed(0)}K</td><td><span class="s-pill ${s.status==='pending'?'s-pend':'s-vis'}">${s.status}</span></td></tr>`).join('')
+    :'<tr><td colspan="3" style="padding:20px;text-align:center;color:var(--sub)">No sites yet.</td></tr>';
+}
+
+function renderPlan(){
+  if(!plan)return;
+  let tv=0,td=0;
+  const items=plan.map((s,i)=>{
+    const d=i===0?hav(userLoc.lat,userLoc.lon,s.latitude,s.longitude):hav(plan[i-1].latitude,plan[i-1].longitude,s.latitude,s.longitude);
+    tv+=Number(s.audit_amount);td+=d;
+    return`<div class="plan-item"><div class="ord-badge">${i+1}</div><div style="flex:1;min-width:0"><div class="pi-name">${s.site_name}</div><div class="pi-row"><span style="color:#a5b4fc;font-weight:700">₹${Number(s.audit_amount).toLocaleString()}</span><span style="color:var(--sub)">${d.toFixed(1)} km</span></div><div class="pi-coords">${s.latitude.toFixed(4)}, ${s.longitude.toFixed(4)}</div></div></div>`;
+  }).join('');
+  ['d','m'].forEach(x=>{
+    document.getElementById('pe-'+x).style.display='none';
+    document.getElementById('pr-'+x).style.display='flex';
+    document.getElementById('kv-'+x).textContent='₹'+tv.toLocaleString();
+    document.getElementById('kd-'+x).textContent=td.toFixed(1)+' km';
+    document.getElementById('pi-'+x).innerHTML=items;
+  });
+}
+
+// ═══════════════════════════════════════════════
+//  CRUD
+// ═══════════════════════════════════════════════
+function addSite(d){sites.push({...d,id:Date.now().toString(),created_at:new Date().toISOString()});save();render();}
+function updSite(id,d){sites=sites.map(s=>s.id===id?{...s,...d}:s);save();render();}
+function delSite(id){sites=sites.filter(s=>s.id!==id);if(plan)plan=plan.filter(s=>s.id!==id);save();render();[mapD,mapM].forEach(m=>m&&m.closePopup());}
+function markVis(id){updSite(id,{status:'visited'});}
+
+// ═══════════════════════════════════════════════
+//  PLAN
+// ═══════════════════════════════════════════════
+function genPlan(src){
+  if(!userLoc){openLocModal(true);return;}
+  const n=Math.max(1,parseInt(document.getElementById('n'+src).value)||3);
+  const p=buildPlan(n);if(!p){alert('No pending sites to plan.');return;}
+  plan=p;renderMaps();renderPlan();
+  ['d','m'].forEach(x=>{const el=document.getElementById('ok-'+x);el.style.display='block';el.textContent='✓ '+p.length+' sites planned';});
+  if(!isDesktop)goPage('mobplan'); else rtab('plan');
+}
+function openGMaps(){
+  if(!plan||!userLoc)return;
+  const o=`${userLoc.lat},${userLoc.lon}`,d=`${plan[plan.length-1].latitude},${plan[plan.length-1].longitude}`,w=plan.slice(0,-1).map(s=>`${s.latitude},${s.longitude}`).join('|');
+  window.open(`https://www.google.com/maps/dir/?api=1&origin=${o}&destination=${d}&waypoints=${w}`,'_blank');
+}
+
+// ═══════════════════════════════════════════════
+//  LOCATION
+// ═══════════════════════════════════════════════
+function setLoc(lat,lon){
+  userLoc={lat,lon};
+  const dot=document.getElementById('loc-dot'),btn=document.getElementById('loc-btn');
+  dot.classList.remove('pulse');dot.style.background='#4ade80';
+  document.getElementById('loc-txt').textContent=`📍 ${lat.toFixed(3)}, ${lon.toFixed(3)}`;
+  btn.style.cssText='background:rgba(34,197,94,.08);border-color:rgba(34,197,94,.3);color:#4ade80';
+  renderMaps();
+}
+function setLocErr(){
+  const dot=document.getElementById('loc-dot'),btn=document.getElementById('loc-btn');
+  dot.classList.remove('pulse');dot.style.background='#f87171';
+  document.getElementById('loc-txt').textContent='⚠ Set Location';
+  btn.style.cssText='background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.3);color:#f87171';
+  openLocModal(true);
+}
+function tryAuto(){
+  if(!navigator.geolocation){setLocErr();return;}
+  navigator.geolocation.getCurrentPosition(p=>setLoc(p.coords.latitude,p.coords.longitude),()=>setLocErr(),{timeout:6000});
+}
+function openLocModal(err){
+  document.getElementById('loc-sub').textContent=err?'Auto-detect blocked. Pick a city or enter coordinates.':'Change your starting location.';
+  openModal('modal-loc');
+}
+function applyCity(la,lo){setLoc(la,lo);closeModal('modal-loc');}
+function applyManual(){
+  const la=parseFloat(document.getElementById('mlat').value),lo=parseFloat(document.getElementById('mlon').value);
+  if(isNaN(la)||isNaN(lo)||la<-90||la>90||lo<-180||lo>180){alert('Enter valid coordinates.');return;}
+  setLoc(la,lo);closeModal('modal-loc');
+}
+
+// ═══════════════════════════════════════════════
+//  MODALS
+// ═══════════════════════════════════════════════
+function openModal(id){document.getElementById(id).classList.add('open');}
+function closeModal(id){document.getElementById(id).classList.remove('open');}
+document.querySelectorAll('.overlay').forEach(o=>o.addEventListener('click',e=>{if(e.target===o)o.classList.remove('open');}));
+
+function openAddModal(){
+  document.getElementById('smt').textContent='Add Audit Site';
+  document.getElementById('sbl').textContent='Add Site';
+  ['fn','fla','flo','fam','feid'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('fst').value='pending';
+  openModal('modal-site');
+}
+function openEditModal(id){
+  [mapD,mapM].forEach(m=>m&&m.closePopup());
+  const s=sites.find(s=>s.id===id);if(!s)return;
+  document.getElementById('smt').textContent='Edit Audit Site';
+  document.getElementById('sbl').textContent='Update Site';
+  document.getElementById('fn').value=s.site_name;
+  document.getElementById('fla').value=s.latitude;
+  document.getElementById('flo').value=s.longitude;
+  document.getElementById('fam').value=s.audit_amount;
+  document.getElementById('fst').value=s.status;
+  document.getElementById('feid').value=id;
+  openModal('modal-site');
+}
+function submitSite(){
+  const name=document.getElementById('fn').value.trim();
+  const la=parseFloat(document.getElementById('fla').value);
+  const lo=parseFloat(document.getElementById('flo').value);
+  const amt=parseFloat(document.getElementById('fam').value);
+  const st=document.getElementById('fst').value;
+  const eid=document.getElementById('feid').value;
+  if(!name||isNaN(la)||isNaN(lo)||isNaN(amt)){alert('Please fill in all fields.');return;}
+  eid?updSite(eid,{site_name:name,latitude:la,longitude:lo,audit_amount:amt,status:st}):addSite({site_name:name,latitude:la,longitude:lo,audit_amount:amt,status:st});
+  closeModal('modal-site');
+}
+
+// ═══════════════════════════════════════════════
+//  NAVIGATION
+// ═══════════════════════════════════════════════
+function goPage(name){
+  document.querySelectorAll('.page').forEach(p=>{p.classList.remove('active');p.style.display='none';});
+  const pg=document.getElementById('page-'+name);pg.style.display='flex';pg.classList.add('active');
+  document.querySelectorAll('.bot-tab').forEach(t=>t.classList.remove('active'));
+  const tabMap={sites:'bt-sites',map:'bt-map',mobplan:'bt-plan'};
+  const tab=document.getElementById(tabMap[name]);if(tab)tab.classList.add('active');
+  if(name==='map'&&mapM)setTimeout(()=>mapM.invalidateSize(),60);
+}
+
+function rtab(t){
+  document.querySelectorAll('.rtab').forEach((b,i)=>b.classList.toggle('active',['sites','plan'][i]===t));
+  document.querySelectorAll('.rtab-pane').forEach(p=>p.classList.remove('active'));
+  document.getElementById('rp-'+t).classList.add('active');
+}
+
+// ═══════════════════════════════════════════════
+//  INIT
+// ═══════════════════════════════════════════════
+window.addEventListener('load',()=>{
+  // City grid
+  document.getElementById('city-grid').innerHTML=CITIES.map(c=>`<button class="city-btn" onclick="applyCity(${c.la},${c.lo})">${c.n}</button>`).join('');
+
+  // Init maps
+  const tiles='https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', attr='© OpenStreetMap';
+  mapD=L.map('map-d').setView([20.5937,78.9629],5);
+  L.tileLayer(tiles,{attribution:attr,maxZoom:18}).addTo(mapD);
+  mapM=L.map('map-m',{zoomControl:false}).setView([20.5937,78.9629],5);
+  L.tileLayer(tiles,{attribution:attr,maxZoom:18}).addTo(mapM);
+
+  // Apply layout (show/hide desktop vs mobile elements)
+  applyLayout();
+  render();
+  tryAuto();
+});
+
+// Re-apply on resize
+let resizeTimer;
+window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(applyLayout,150);});
+</script>
+</body>
+</html>
